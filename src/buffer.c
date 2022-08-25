@@ -1,4 +1,4 @@
-﻿/*
+/*
  *  MinHook - The Minimalistic API Hooking Library for x64/x86
  *  Copyright (C) 2009-2017 Tsuda Kageyu.
  *  All rights reserved.
@@ -26,11 +26,7 @@
  *  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <windows.h>
 #include "buffer.h"
-
-// Size of each memory block. (= page size of VirtualAlloc)
-#define MEMORY_BLOCK_SIZE 0x1000
 
 // Max range for seeking a memory block. (= 1024MB)
 #define MAX_MEMORY_RANGE 0x40000000
@@ -45,7 +41,7 @@ typedef struct _MEMORY_SLOT
     union
     {
         struct _MEMORY_SLOT *pNext;
-        UINT8 buffer[MEMORY_SLOT_SIZE];
+        uint8_t buffer[MEMORY_SLOT_SIZE];
     };
 } MEMORY_SLOT, *PMEMORY_SLOT;
 
@@ -54,7 +50,7 @@ typedef struct _MEMORY_BLOCK
 {
     struct _MEMORY_BLOCK *pNext;
     PMEMORY_SLOT pFree;         // First element of the free slot list.
-    UINT usedCount;
+    unsigned int usedCount;
 } MEMORY_BLOCK, *PMEMORY_BLOCK;
 
 //-------------------------------------------------------------------------
@@ -65,13 +61,13 @@ typedef struct _MEMORY_BLOCK
 PMEMORY_BLOCK g_pMemoryBlocks;
 
 //-------------------------------------------------------------------------
-VOID InitializeBuffer(VOID)
+void InitializeBuffer()
 {
     // Nothing to do for now.
 }
 
 //-------------------------------------------------------------------------
-VOID UninitializeBuffer(VOID)
+void UninitializeBuffer()
 {
     PMEMORY_BLOCK pBlock = g_pMemoryBlocks;
     g_pMemoryBlocks = NULL;
@@ -79,36 +75,46 @@ VOID UninitializeBuffer(VOID)
     while (pBlock)
     {
         PMEMORY_BLOCK pNext = pBlock->pNext;
-        VirtualFree(pBlock, 0, MEM_RELEASE);
+        munmap(pBlock, MEMORY_BLOCK_SIZE);
         pBlock = pNext;
     }
 }
 
 //-------------------------------------------------------------------------
 #if defined(_M_X64) || defined(__x86_64__)
-static LPVOID FindPrevFreeRegion(LPVOID pAddress, LPVOID pMinAddr, DWORD dwAllocationGranularity)
+static void *FindPrevFreeRegion(void *pAddress, void *pMinAddr)
 {
-    ULONG_PTR tryAddr = (ULONG_PTR)pAddress;
+    uintptr_t tryAddr = (uintptr_t)pAddress, minAddr = (uintptr_t)pMinAddr;
 
-    // Round down to the allocation granularity.
-    tryAddr -= tryAddr % dwAllocationGranularity;
-
-    // Start from the previous allocation granularity multiply.
-    tryAddr -= dwAllocationGranularity;
-
-    while (tryAddr >= (ULONG_PTR)pMinAddr)
+    FILE *fpMaps = fopen("/proc/self/maps", "r");
+    if (fpMaps)
     {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery((LPVOID)tryAddr, &mbi, sizeof(mbi)) == 0)
-            break;
+        char line[PATH_MAX + 74];
+        uintptr_t baseAddress = 0, lastEndAddress = 0;
 
-        if (mbi.State == MEM_FREE)
-            return (LPVOID)tryAddr;
+        while (fgets(line, sizeof(line), fpMaps))
+        {
+            uintptr_t endAddress = 0;
+            sscanf(line, "%lx-%lx", &baseAddress, &endAddress);
 
-        if ((ULONG_PTR)mbi.AllocationBase < dwAllocationGranularity)
-            break;
+            if (endAddress < minAddr)
+                continue;
 
-        tryAddr = (ULONG_PTR)mbi.AllocationBase - dwAllocationGranularity;
+            if (baseAddress > tryAddr)
+                break;
+
+            if (baseAddress == lastEndAddress) {
+                lastEndAddress = endAddress;
+                continue;
+            }
+
+            if (lastEndAddress && baseAddress - lastEndAddress >= MEMORY_BLOCK_SIZE)
+                return (void*)lastEndAddress;
+
+            lastEndAddress = endAddress;
+        }
+
+        fclose(fpMaps);
     }
 
     return NULL;
@@ -117,30 +123,39 @@ static LPVOID FindPrevFreeRegion(LPVOID pAddress, LPVOID pMinAddr, DWORD dwAlloc
 
 //-------------------------------------------------------------------------
 #if defined(_M_X64) || defined(__x86_64__)
-static LPVOID FindNextFreeRegion(LPVOID pAddress, LPVOID pMaxAddr, DWORD dwAllocationGranularity)
+void *FindNextFreeRegion(void *pAddress, void *pMaxAddr)
 {
-    ULONG_PTR tryAddr = (ULONG_PTR)pAddress;
+    uintptr_t tryAddr = (uintptr_t)pAddress, maxAddr = (uintptr_t)pMaxAddr;
 
-    // Round down to the allocation granularity.
-    tryAddr -= tryAddr % dwAllocationGranularity;
-
-    // Start from the next allocation granularity multiply.
-    tryAddr += dwAllocationGranularity;
-
-    while (tryAddr <= (ULONG_PTR)pMaxAddr)
+    FILE *fpMaps = fopen("/proc/self/maps", "r");
+    if (fpMaps)
     {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (VirtualQuery((LPVOID)tryAddr, &mbi, sizeof(mbi)) == 0)
-            break;
+        char line[PATH_MAX + 74];
+        uintptr_t baseAddress = 0, lastEndAddress = 0;
 
-        if (mbi.State == MEM_FREE)
-            return (LPVOID)tryAddr;
+        while (fgets(line, sizeof(line), fpMaps))
+        {
+            uintptr_t endAddress = 0;
+            sscanf(line, "%lx-%lx", &baseAddress, &endAddress);
 
-        tryAddr = (ULONG_PTR)mbi.BaseAddress + mbi.RegionSize;
+            if (baseAddress < tryAddr)
+                continue;
 
-        // Round up to the next allocation granularity.
-        tryAddr += dwAllocationGranularity - 1;
-        tryAddr -= tryAddr % dwAllocationGranularity;
+            if (baseAddress > maxAddr)
+                break;
+
+            if (baseAddress == lastEndAddress) {
+                lastEndAddress = endAddress;
+                continue;
+            }
+
+            if (lastEndAddress && baseAddress - lastEndAddress >= MEMORY_BLOCK_SIZE)
+                return (void*)lastEndAddress;
+
+            lastEndAddress = endAddress;
+        }
+
+        fclose(fpMaps);
     }
 
     return NULL;
@@ -148,24 +163,26 @@ static LPVOID FindNextFreeRegion(LPVOID pAddress, LPVOID pMaxAddr, DWORD dwAlloc
 #endif
 
 //-------------------------------------------------------------------------
-static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
+static inline void *AllocPage(void *lpAddress, size_t dwSize, unsigned long flType, unsigned long flProtect)
+{
+    void *address = mmap(lpAddress, dwSize, flProtect, flType, -1, 0);
+    return address == MAP_FAILED ? NULL : address;
+}
+
+//-------------------------------------------------------------------------
+static PMEMORY_BLOCK GetMemoryBlock(void *pOrigin)
 {
     PMEMORY_BLOCK pBlock;
 #if defined(_M_X64) || defined(__x86_64__)
-    ULONG_PTR minAddr;
-    ULONG_PTR maxAddr;
-
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    minAddr = (ULONG_PTR)si.lpMinimumApplicationAddress;
-    maxAddr = (ULONG_PTR)si.lpMaximumApplicationAddress;
+    uintptr_t minAddr = MEMORY_BLOCK_SIZE;
+    uintptr_t maxAddr = 1ull << 47;
 
     // pOrigin ± 512MB
-    if ((ULONG_PTR)pOrigin > MAX_MEMORY_RANGE && minAddr < (ULONG_PTR)pOrigin - MAX_MEMORY_RANGE)
-        minAddr = (ULONG_PTR)pOrigin - MAX_MEMORY_RANGE;
+    if ((uintptr_t)pOrigin > MAX_MEMORY_RANGE && minAddr < (uintptr_t)pOrigin - MAX_MEMORY_RANGE)
+        minAddr = (uintptr_t)pOrigin - MAX_MEMORY_RANGE;
 
-    if (maxAddr > (ULONG_PTR)pOrigin + MAX_MEMORY_RANGE)
-        maxAddr = (ULONG_PTR)pOrigin + MAX_MEMORY_RANGE;
+    if (maxAddr > (uintptr_t)pOrigin + MAX_MEMORY_RANGE)
+        maxAddr = (uintptr_t)pOrigin + MAX_MEMORY_RANGE;
 
     // Make room for MEMORY_BLOCK_SIZE bytes.
     maxAddr -= MEMORY_BLOCK_SIZE - 1;
@@ -176,7 +193,7 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
     {
 #if defined(_M_X64) || defined(__x86_64__)
         // Ignore the blocks too far.
-        if ((ULONG_PTR)pBlock < minAddr || (ULONG_PTR)pBlock >= maxAddr)
+        if ((uintptr_t)pBlock < minAddr || (uintptr_t)pBlock >= maxAddr)
             continue;
 #endif
         // The block has at least one unused slot.
@@ -187,15 +204,15 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
 #if defined(_M_X64) || defined(__x86_64__)
     // Alloc a new block above if not found.
     {
-        LPVOID pAlloc = pOrigin;
-        while ((ULONG_PTR)pAlloc >= minAddr)
+        void* pAlloc = pOrigin;
+        while ((uintptr_t)pAlloc >= minAddr)
         {
-            pAlloc = FindPrevFreeRegion(pAlloc, (LPVOID)minAddr, si.dwAllocationGranularity);
+            pAlloc = FindPrevFreeRegion(pAlloc, (void*)minAddr);
             if (pAlloc == NULL)
                 break;
 
-            pBlock = (PMEMORY_BLOCK)VirtualAlloc(
-                pAlloc, MEMORY_BLOCK_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            pBlock = (PMEMORY_BLOCK)AllocPage(
+                pAlloc, MEMORY_BLOCK_SIZE, MAP_PRIVATE | MAP_ANONYMOUS, PROT_READ | PROT_WRITE | PROT_EXEC);
             if (pBlock != NULL)
                 break;
         }
@@ -204,23 +221,23 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
     // Alloc a new block below if not found.
     if (pBlock == NULL)
     {
-        LPVOID pAlloc = pOrigin;
-        while ((ULONG_PTR)pAlloc <= maxAddr)
+        void* pAlloc = pOrigin;
+        while ((uintptr_t)pAlloc <= maxAddr)
         {
-            pAlloc = FindNextFreeRegion(pAlloc, (LPVOID)maxAddr, si.dwAllocationGranularity);
+            pAlloc = FindNextFreeRegion(pAlloc, (void*)maxAddr);
             if (pAlloc == NULL)
                 break;
 
-            pBlock = (PMEMORY_BLOCK)VirtualAlloc(
-                pAlloc, MEMORY_BLOCK_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            pBlock = (PMEMORY_BLOCK)AllocPage(
+                pAlloc, MEMORY_BLOCK_SIZE, MAP_PRIVATE | MAP_ANONYMOUS, PROT_READ | PROT_WRITE | PROT_EXEC);
             if (pBlock != NULL)
                 break;
         }
     }
 #else
     // In x86 mode, a memory block can be placed anywhere.
-    pBlock = (PMEMORY_BLOCK)VirtualAlloc(
-        NULL, MEMORY_BLOCK_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    pBlock = (PMEMORY_BLOCK)AllocPage(
+        NULL, MEMORY_BLOCK_SIZE, MAP_PRIVATE | MAP_ANONYMOUS, PROT_READ | PROT_WRITE | PROT_EXEC);
 #endif
 
     if (pBlock != NULL)
@@ -234,7 +251,7 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
             pSlot->pNext = pBlock->pFree;
             pBlock->pFree = pSlot;
             pSlot++;
-        } while ((ULONG_PTR)pSlot - (ULONG_PTR)pBlock <= MEMORY_BLOCK_SIZE - MEMORY_SLOT_SIZE);
+        } while ((uintptr_t)pSlot - (uintptr_t)pBlock <= MEMORY_BLOCK_SIZE - MEMORY_SLOT_SIZE);
 
         pBlock->pNext = g_pMemoryBlocks;
         g_pMemoryBlocks = pBlock;
@@ -244,7 +261,7 @@ static PMEMORY_BLOCK GetMemoryBlock(LPVOID pOrigin)
 }
 
 //-------------------------------------------------------------------------
-LPVOID AllocateBuffer(LPVOID pOrigin)
+void *AllocateBuffer(void *pOrigin)
 {
     PMEMORY_SLOT  pSlot;
     PMEMORY_BLOCK pBlock = GetMemoryBlock(pOrigin);
@@ -263,15 +280,15 @@ LPVOID AllocateBuffer(LPVOID pOrigin)
 }
 
 //-------------------------------------------------------------------------
-VOID FreeBuffer(LPVOID pBuffer)
+void FreeBuffer(void *pBuffer)
 {
     PMEMORY_BLOCK pBlock = g_pMemoryBlocks;
     PMEMORY_BLOCK pPrev = NULL;
-    ULONG_PTR pTargetBlock = ((ULONG_PTR)pBuffer / MEMORY_BLOCK_SIZE) * MEMORY_BLOCK_SIZE;
+    uintptr_t pTargetBlock = ((uintptr_t)pBuffer / MEMORY_BLOCK_SIZE) * MEMORY_BLOCK_SIZE;
 
     while (pBlock != NULL)
     {
-        if ((ULONG_PTR)pBlock == pTargetBlock)
+        if ((uintptr_t)pBlock == pTargetBlock)
         {
             PMEMORY_SLOT pSlot = (PMEMORY_SLOT)pBuffer;
 #ifdef _DEBUG
@@ -291,7 +308,7 @@ VOID FreeBuffer(LPVOID pBuffer)
                 else
                     g_pMemoryBlocks = pBlock->pNext;
 
-                VirtualFree(pBlock, 0, MEM_RELEASE);
+                munmap(pBlock, MEMORY_BLOCK_SIZE);
             }
 
             break;
@@ -303,10 +320,50 @@ VOID FreeBuffer(LPVOID pBuffer)
 }
 
 //-------------------------------------------------------------------------
-BOOL IsExecutableAddress(LPVOID pAddress)
+int QueryAddress(void *pAddress, PMEMORY_INFORMATION pBuffer)
 {
-    MEMORY_BASIC_INFORMATION mi;
-    VirtualQuery(pAddress, &mi, sizeof(mi));
+    memset(pBuffer, 0, sizeof(MEMORY_INFORMATION));
+    size_t final;
+    uintptr_t address = (uintptr_t)pAddress;
+    FILE *fpMaps = fopen("/proc/self/maps", "r");
+    if (fpMaps)
+    {
+        char line[PATH_MAX + 74];
+        __u_long baseAddress = 0, endAddress = 0;
+        char perm[4];
 
-    return (mi.State == MEM_COMMIT && (mi.Protect & PAGE_EXECUTE_FLAGS));
+        while (fgets(line, sizeof(line), fpMaps))
+        {
+            sscanf(line, "%lx-%lx %s", &baseAddress, &endAddress, perm);
+            if (baseAddress <= address) {
+                if (endAddress >= address) {
+                    pBuffer->BaseAddress = (void*)baseAddress;
+                    pBuffer->RegionSize = endAddress - baseAddress;
+                    if (perm[0] == 'r')
+                        pBuffer->Protection |= PROT_READ;
+                    if (perm[1] == 'w')
+                        pBuffer->Protection |= PROT_WRITE;
+                    if (perm[2] == 'x')
+                        pBuffer->Protection |= PROT_EXEC;
+                    if (perm[3] == 'p')
+                        pBuffer->State = MAP_PRIVATE;
+                    final = sizeof(void*) + sizeof(unsigned long) * 2;
+                    break;
+                }
+            }
+        }
+
+        fclose(fpMaps);
+    }
+
+    return final;
+}
+
+//-------------------------------------------------------------------------
+int IsExecutableAddress(void *pAddress)
+{
+    MEMORY_INFORMATION mi;
+    QueryAddress(pAddress, &mi);
+
+    return (mi.Protection & PROT_EXEC);
 }

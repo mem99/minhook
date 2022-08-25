@@ -26,12 +26,6 @@
  *  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <windows.h>
-
-#ifdef _MSC_VER
-    #include <intrin.h>
-#endif
-
 #ifndef ARRAYSIZE
     #define ARRAYSIZE(A) (sizeof(A)/sizeof((A)[0]))
 #endif
@@ -57,23 +51,23 @@
 #endif
 
 //-------------------------------------------------------------------------
-static BOOL IsCodePadding(LPBYTE pInst, UINT size)
+static int IsCodePadding(unsigned char *pInst, unsigned int size)
 {
-    UINT i;
+    unsigned int i;
 
     if (pInst[0] != 0x00 && pInst[0] != 0x90 && pInst[0] != 0xCC)
-        return FALSE;
+        return 0;
 
     for (i = 1; i < size; ++i)
     {
         if (pInst[i] != pInst[0])
-            return FALSE;
+            return 0;
     }
-    return TRUE;
+    return 1;
 }
 
 //-------------------------------------------------------------------------
-BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
+int CreateTrampolineFunction(PTRAMPOLINE ct)
 {
 #if defined(_M_X64) || defined(__x86_64__)
     CALL_ABS call = {
@@ -105,30 +99,30 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
     };
 #endif
 
-    UINT8     oldPos   = 0;
-    UINT8     newPos   = 0;
-    ULONG_PTR jmpDest  = 0;     // Destination address of an internal jump.
-    BOOL      finished = FALSE; // Is the function completed?
+    uint8_t     oldPos   = 0;
+    uint8_t     newPos   = 0;
+    uintptr_t   jmpDest  = 0;     // Destination address of an internal jump.
+    int         finished = 0; // Is the function completed?
 #if defined(_M_X64) || defined(__x86_64__)
-    UINT8     instBuf[16];
+    uint8_t     instBuf[16];
 #endif
 
-    ct->patchAbove = FALSE;
+    ct->patchAbove = 0;
     ct->nIP        = 0;
 
     do
     {
-        HDE       hs;
-        UINT      copySize;
-        LPVOID    pCopySrc;
-        ULONG_PTR pOldInst = (ULONG_PTR)ct->pTarget     + oldPos;
-        ULONG_PTR pNewInst = (ULONG_PTR)ct->pTrampoline + newPos;
+        HDE               hs;
+        unsigned int      copySize;
+        void             *pCopySrc;
+        uintptr_t pOldInst = (uintptr_t)ct->pTarget     + oldPos;
+        uintptr_t pNewInst = (uintptr_t)ct->pTrampoline + newPos;
 
-        copySize = HDE_DISASM((LPVOID)pOldInst, &hs);
+        copySize = HDE_DISASM((void*)pOldInst, &hs);
         if (hs.flags & F_ERROR)
-            return FALSE;
+            return 0;
 
-        pCopySrc = (LPVOID)pOldInst;
+        pCopySrc = (void*)pOldInst;
         if (oldPos >= sizeof(JMP_REL))
         {
             // The trampoline function is long enough.
@@ -136,12 +130,12 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
 #if defined(_M_X64) || defined(__x86_64__)
             jmp.address = pOldInst;
 #else
-            jmp.operand = (UINT32)(pOldInst - (pNewInst + sizeof(jmp)));
+            jmp.operand = (uint32_t)(pOldInst - (pNewInst + sizeof(jmp)));
 #endif
             pCopySrc = &jmp;
             copySize = sizeof(jmp);
 
-            finished = TRUE;
+            finished = 1;
         }
 #if defined(_M_X64) || defined(__x86_64__)
         else if ((hs.modrm & 0xC7) == 0x05)
@@ -149,34 +143,29 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
             // Instructions using RIP relative addressing. (ModR/M = 00???101B)
 
             // Modify the RIP relative address.
-            PUINT32 pRelAddr;
+            uint32_t *pRelAddr;
 
-            // Avoid using memcpy to reduce the footprint.
-#ifndef _MSC_VER
-            memcpy(instBuf, (LPBYTE)pOldInst, copySize);
-#else
-            __movsb(instBuf, (LPBYTE)pOldInst, copySize);
-#endif
+            memcpy(instBuf, (unsigned char*)pOldInst, copySize);
             pCopySrc = instBuf;
 
             // Relative address is stored at (instruction length - immediate value length - 4).
-            pRelAddr = (PUINT32)(instBuf + hs.len - ((hs.flags & 0x3C) >> 2) - 4);
+            pRelAddr = (uint32_t*)(instBuf + hs.len - ((hs.flags & 0x3C) >> 2) - 4);
             *pRelAddr
-                = (UINT32)((pOldInst + hs.len + (INT32)hs.disp.disp32) - (pNewInst + hs.len));
+                = (uint32_t)((pOldInst + hs.len + (int32_t)hs.disp.disp32) - (pNewInst + hs.len));
 
             // Complete the function if JMP (FF /4).
             if (hs.opcode == 0xFF && hs.modrm_reg == 4)
-                finished = TRUE;
+                finished = 1;
         }
 #endif
         else if (hs.opcode == 0xE8)
         {
             // Direct relative CALL
-            ULONG_PTR dest = pOldInst + hs.len + (INT32)hs.imm.imm32;
+            uintptr_t dest = pOldInst + hs.len + (int32_t)hs.imm.imm32;
 #if defined(_M_X64) || defined(__x86_64__)
             call.address = dest;
 #else
-            call.operand = (UINT32)(dest - (pNewInst + sizeof(call)));
+            call.operand = (uint32_t)(dest - (pNewInst + sizeof(call)));
 #endif
             pCopySrc = &call;
             copySize = sizeof(call);
@@ -184,16 +173,16 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
         else if ((hs.opcode & 0xFD) == 0xE9)
         {
             // Direct relative JMP (EB or E9)
-            ULONG_PTR dest = pOldInst + hs.len;
+            uintptr_t dest = pOldInst + hs.len;
 
             if (hs.opcode == 0xEB) // isShort jmp
-                dest += (INT8)hs.imm.imm8;
+                dest += (int8_t)hs.imm.imm8;
             else
-                dest += (INT32)hs.imm.imm32;
+                dest += (int32_t)hs.imm.imm32;
 
             // Simply copy an internal jump.
-            if ((ULONG_PTR)ct->pTarget <= dest
-                && dest < ((ULONG_PTR)ct->pTarget + sizeof(JMP_REL)))
+            if ((uintptr_t)ct->pTarget <= dest
+                && dest < ((uintptr_t)ct->pTarget + sizeof(JMP_REL)))
             {
                 if (jmpDest < dest)
                     jmpDest = dest;
@@ -203,7 +192,7 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
 #if defined(_M_X64) || defined(__x86_64__)
                 jmp.address = dest;
 #else
-                jmp.operand = (UINT32)(dest - (pNewInst + sizeof(jmp)));
+                jmp.operand = (uint32_t)(dest - (pNewInst + sizeof(jmp)));
 #endif
                 pCopySrc = &jmp;
                 copySize = sizeof(jmp);
@@ -217,17 +206,17 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
             || (hs.opcode2 & 0xF0) == 0x80)
         {
             // Direct relative Jcc
-            ULONG_PTR dest = pOldInst + hs.len;
+            uintptr_t dest = pOldInst + hs.len;
 
             if ((hs.opcode & 0xF0) == 0x70      // Jcc
                 || (hs.opcode & 0xFC) == 0xE0)  // LOOPNZ/LOOPZ/LOOP/JECXZ
-                dest += (INT8)hs.imm.imm8;
+                dest += (int8_t)hs.imm.imm8;
             else
-                dest += (INT32)hs.imm.imm32;
+                dest += (int32_t)hs.imm.imm32;
 
             // Simply copy an internal jump.
-            if ((ULONG_PTR)ct->pTarget <= dest
-                && dest < ((ULONG_PTR)ct->pTarget + sizeof(JMP_REL)))
+            if ((uintptr_t)ct->pTarget <= dest
+                && dest < ((uintptr_t)ct->pTarget + sizeof(JMP_REL)))
             {
                 if (jmpDest < dest)
                     jmpDest = dest;
@@ -235,18 +224,18 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
             else if ((hs.opcode & 0xFC) == 0xE0)
             {
                 // LOOPNZ/LOOPZ/LOOP/JCXZ/JECXZ to the outside are not supported.
-                return FALSE;
+                return 0;
             }
             else
             {
-                UINT8 cond = ((hs.opcode != 0x0F ? hs.opcode : hs.opcode2) & 0x0F);
+                uint8_t cond = ((hs.opcode != 0x0F ? hs.opcode : hs.opcode2) & 0x0F);
 #if defined(_M_X64) || defined(__x86_64__)
                 // Invert the condition in x64 mode to simplify the conditional jump logic.
                 jcc.opcode  = 0x71 ^ cond;
                 jcc.address = dest;
 #else
                 jcc.opcode1 = 0x80 | cond;
-                jcc.operand = (UINT32)(dest - (pNewInst + sizeof(jcc)));
+                jcc.operand = (uint32_t)(dest - (pNewInst + sizeof(jcc)));
 #endif
                 pCopySrc = &jcc;
                 copySize = sizeof(jcc);
@@ -262,26 +251,22 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
 
         // Can't alter the instruction length in a branch.
         if (pOldInst < jmpDest && copySize != hs.len)
-            return FALSE;
+            return 0;
 
         // Trampoline function is too large.
         if ((newPos + copySize) > TRAMPOLINE_MAX_SIZE)
-            return FALSE;
+            return 0;
 
         // Trampoline function has too many instructions.
         if (ct->nIP >= ARRAYSIZE(ct->oldIPs))
-            return FALSE;
+            return 0;
 
         ct->oldIPs[ct->nIP] = oldPos;
         ct->newIPs[ct->nIP] = newPos;
         ct->nIP++;
 
-        // Avoid using memcpy to reduce the footprint.
-#ifndef _MSC_VER
-        memcpy((LPBYTE)ct->pTrampoline + newPos, pCopySrc, copySize);
-#else
-        __movsb((LPBYTE)ct->pTrampoline + newPos, (LPBYTE)pCopySrc, copySize);
-#endif
+        memcpy((unsigned char*)ct->pTrampoline + newPos, pCopySrc, copySize);
+
         newPos += copySize;
         oldPos += hs.len;
     }
@@ -289,32 +274,32 @@ BOOL CreateTrampolineFunction(PTRAMPOLINE ct)
 
     // Is there enough place for a long jump?
     if (oldPos < sizeof(JMP_REL)
-        && !IsCodePadding((LPBYTE)ct->pTarget + oldPos, sizeof(JMP_REL) - oldPos))
+        && !IsCodePadding((unsigned char*)ct->pTarget + oldPos, sizeof(JMP_REL) - oldPos))
     {
         // Is there enough place for a short jump?
         if (oldPos < sizeof(JMP_REL_SHORT)
-            && !IsCodePadding((LPBYTE)ct->pTarget + oldPos, sizeof(JMP_REL_SHORT) - oldPos))
+            && !IsCodePadding((unsigned char*)ct->pTarget + oldPos, sizeof(JMP_REL_SHORT) - oldPos))
         {
-            return FALSE;
+            return 0;
         }
 
         // Can we place the long jump above the function?
-        if (!IsExecutableAddress((LPBYTE)ct->pTarget - sizeof(JMP_REL)))
-            return FALSE;
+        if (!IsExecutableAddress((unsigned char*)ct->pTarget - sizeof(JMP_REL)))
+            return 0;
 
-        if (!IsCodePadding((LPBYTE)ct->pTarget - sizeof(JMP_REL), sizeof(JMP_REL)))
-            return FALSE;
+        if (!IsCodePadding((unsigned char*)ct->pTarget - sizeof(JMP_REL), sizeof(JMP_REL)))
+            return 0;
 
-        ct->patchAbove = TRUE;
+        ct->patchAbove = 1;
     }
 
 #if defined(_M_X64) || defined(__x86_64__)
     // Create a relay function.
-    jmp.address = (ULONG_PTR)ct->pDetour;
+    jmp.address = (uintptr_t)ct->pDetour;
 
-    ct->pRelay = (LPBYTE)ct->pTrampoline + newPos;
+    ct->pRelay = (unsigned char*)ct->pTrampoline + newPos;
     memcpy(ct->pRelay, &jmp, sizeof(jmp));
 #endif
 
-    return TRUE;
+    return 1;
 }

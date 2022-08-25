@@ -27,6 +27,20 @@
  */
 
 #pragma once
+#include <unistd.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <dirent.h>
+#include <syscall.h>
+#include <sys/mman.h>
+
+#define gettid() syscall(SYS_gettid)
+#define tgkill(__tgid, __tid, __signal) syscall(SYS_tgkill, __tgid, __tid, __signal)
+
+// Size of each memory block. (= size of one page)
+#define MEMORY_BLOCK_SIZE (uintptr_t)sysconf(_SC_PAGESIZE)
 
 // Size of each memory slot.
 #if defined(_M_X64) || defined(__x86_64__)
@@ -35,8 +49,16 @@
     #define MEMORY_SLOT_SIZE 32
 #endif
 
-VOID   InitializeBuffer(VOID);
-VOID   UninitializeBuffer(VOID);
-LPVOID AllocateBuffer(LPVOID pOrigin);
-VOID   FreeBuffer(LPVOID pBuffer);
-BOOL   IsExecutableAddress(LPVOID pAddress);
+typedef struct _MEMORY_INFORMATION {
+    void           *BaseAddress;
+    uint64_t        RegionSize;
+    unsigned long   Protection;
+    unsigned long   State;
+} MEMORY_INFORMATION, *PMEMORY_INFORMATION;
+
+void   InitializeBuffer();
+void   UninitializeBuffer();
+void  *AllocateBuffer(void *pOrigin);
+void   FreeBuffer(void *pBuffer);
+int    QueryAddress(void *pAddress, PMEMORY_INFORMATION pBuffer);
+int    IsExecutableAddress(void *pAddress);
