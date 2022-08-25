@@ -8,8 +8,9 @@ http://www.codeproject.com/KB/winsdk/LibMinHook.aspx
 
 ### Version history
 
-- **v1.0.0 - 08/24/2022
-  * Ported essentials to Unix.
+- **v0.9.0 - 08/24/2022
+  * Ported essentials to Unix 
+  * Unfinished: Freeze/Unfreeze, ProcessThreadIPs
 
 TsudaKageyu/minhook
 - **v1.3.3 - 8 Jan 2017**
