@@ -1,13 +1,18 @@
-# MinHook
+# MinHook (Unix)
 
 [![License](https://img.shields.io/badge/License-BSD%202--Clause-orange.svg)](https://opensource.org/licenses/BSD-2-Clause)
 
-The Minimalistic x86/x64 API Hooking Library for Windows
+The Minimalistic x86/x64 API Hooking Library originally for Windows, ported to Unix.
 
 http://www.codeproject.com/KB/winsdk/LibMinHook.aspx
 
 ### Version history
 
+- **v0.9.0 - 08/24/2022
+  * Ported essentials to Unix 
+  * Unfinished: Freeze/Unfreeze, ProcessThreadIPs
+
+TsudaKageyu/minhook
 - **v1.3.3 - 8 Jan 2017**
   * Added a helper function ```MH_CreateHookApiEx```. (Thanks to asm256)
   * Support Visual Studio 2017 RC.
