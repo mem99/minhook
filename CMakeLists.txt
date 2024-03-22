@@ -36,25 +36,27 @@ set(MINHOOK_PATCH_VERSION 3)
 set(MINHOOK_VERSION ${MINHOOK_MAJOR_VERSION}.${MINHOOK_MINOR_VERSION}.${MINHOOK_PATCH_VERSION})
 
 ################
-#    BUILD     # 
+#    BUILD     #
 ################
 
 option(BUILD_SHARED_LIBS "build shared version" OFF)
 
-set(SOURCES_MINHOOK 
+set(SOURCES_MINHOOK
   "src/buffer.c"
   "src/hook.c"
   "src/trampoline.c"
 )
 
-if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+set(MINHOOK_USE_32 CACHE BOOL false)
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT MINHOOK_USE_32)
   set(SOURCES_HDE "src/hde/hde64.c")
 else()
   set(SOURCES_HDE "src/hde/hde32.c")
 endif()
 
 if(BUILD_SHARED_LIBS)
-  set(RESOURCES 
+  set(RESOURCES
     "dll_resources/minhook.rc"
     "dll_resources/minhook.def"
   )
@@ -72,7 +74,7 @@ target_include_directories(minhook PRIVATE "src/hde/")
 
 if(WIN32)
   set_target_properties(minhook PROPERTIES PREFIX "")
-  if(CMAKE_SIZEOF_VOID_P EQUAL 8)   
+  if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND NOT MINHOOK_USE_32)
     set_target_properties(minhook PROPERTIES DEBUG_POSTFIX ".x64d")
     set_target_properties(minhook PROPERTIES RELEASE_POSTFIX ".x64")
     set_target_properties(minhook PROPERTIES RELWITHDEBINFO_POSTFIX ".x64")
@@ -81,7 +83,7 @@ if(WIN32)
     set_target_properties(minhook PROPERTIES DEBUG_POSTFIX ".x32d")
     set_target_properties(minhook PROPERTIES RELEASE_POSTFIX ".x32")
     set_target_properties(minhook PROPERTIES RELWITHDEBINFO_POSTFIX ".x32")
-    set_target_properties(minhook PROPERTIES MINSIZEREL_POSTFIX ".x64")
+    set_target_properties(minhook PROPERTIES MINSIZEREL_POSTFIX ".x32")
   endif()
 else()
   set_target_properties(minhook PROPERTIES PREFIX "lib")
@@ -90,29 +92,29 @@ else()
 endif()
 
 ################
-# CMAKE CONFIG # 
+# CMAKE CONFIG #
 ################
 
 configure_package_config_file(
     "cmake/minhook-config.cmake.in"
     "minhook-config.cmake"
-  INSTALL_DESTINATION 
+  INSTALL_DESTINATION
     "lib/minhook"
 )
 
 write_basic_package_version_file(
   "minhook-config-version.cmake"
-VERSION 
+VERSION
   ${MINHOOK_VERSION}
 COMPATIBILITY
   AnyNewerVersion
 )
 
 install(
-  FILES 
+  FILES
     "${CMAKE_CURRENT_BINARY_DIR}/minhook-config.cmake"
     "${CMAKE_CURRENT_BINARY_DIR}/minhook-config-version.cmake"
-  DESTINATION 
+  DESTINATION
     "lib/minhook"
 )
 
@@ -130,9 +132,9 @@ install(TARGETS minhook
 install(
   EXPORT
     minhook-targets
-  NAMESPACE 
+  NAMESPACE
     minhook::
-  DESTINATION 
+  DESTINATION
     "lib/minhook"
 )
 
